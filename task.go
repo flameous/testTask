@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"errors"
 	"time"
+	"log"
 )
 
 var (
@@ -14,17 +15,19 @@ var (
 	queue    Queue
 	mtxQueue sync.Mutex
 
-	//todo: ttl инфы в кэше - 30 секунд
-	validTimeSeconds int64 = 30
-)
+	//todo: ttl инфы в кэше
+	validTimeSeconds int64 = 3
 
-type CacheMap map[string]*Cache
+	//todo: обновление кэша нет
+)
 
 type Cache struct {
 	data         *interface{}
 	creationTime int64
 }
 
+// Очередь сделана в виде слайса строк-ключей для удобной итерации
+// и мапа для хранения всяких нужных вещей
 type Queue struct {
 	qMap map[string]*SomeStruct
 
@@ -64,7 +67,7 @@ func eraseCache() {
 	}
 }
 
-func writeToCache(key string, i interface{}) {
+func updateCache(key string, i interface{}) {
 	defer mtxCache.Unlock()
 	mtxCache.Lock()
 
@@ -85,6 +88,7 @@ func Get(key string, getter func() (interface{}, error)) (i interface{}, err err
 	d, ok := checkCache(key)
 	if ok {
 		i = *d
+		err = errors.New("from cache!: " + key)
 		return
 	}
 
@@ -98,9 +102,6 @@ func Get(key string, getter func() (interface{}, error)) (i interface{}, err err
 	i = result.i
 	err = result.err
 
-	if err == nil {
-		writeToCache(key, i)
-	}
 	return
 }
 
@@ -128,18 +129,25 @@ func QueueLifecycle() {
 		if len(queue.q) != 0 {
 
 			// ключ первого в очереди геттера
-			key := queue.q[0]
-			if key == "" {
-				continue
-			}
+			key := func() string {
+				defer mtxQueue.Unlock()
+				mtxQueue.Lock()
+				return queue.q[0]
+			}()
 
-			task, ok := queue.qMap[key]
+			task, ok := func() (i *SomeStruct, ok bool) {
+				defer mtxQueue.Unlock()
+				mtxQueue.Lock()
+
+				i, ok = queue.qMap[key]
+				return
+			}()
 
 			// такое, _вроде бы_, никогда не может случиться.
 			if ! ok {
-				fmt.Println(`key is`, key)
-				panic(fmt.Sprintf("Несуществующий ключ в очереди. "+
-					"\"%s\". queue.qMap: %v, queue.q: %v", key, queue.qMap, queue.q))
+				log.Panicf("Несуществующий ключ в очереди. "+
+					"\"%s\". queue.qMap: %v, queue.q: %v.",
+					key, queue.qMap, queue.q)
 			}
 
 			i, err := task.getter()
@@ -147,6 +155,10 @@ func QueueLifecycle() {
 
 			for _, v := range task.Receivers {
 				v <- r
+			}
+
+			if err == nil {
+				updateCache(key, i)
 			}
 
 			func() {
@@ -163,12 +175,21 @@ func QueueLifecycle() {
 	}
 }
 
-func init() {
+
+func resetCache() {
+	defer mtxCache.Unlock()
+	mtxCache.Lock()
 	cacheMap = make(map[string]*Cache)
+}
+
+func init() {
+	log.SetFlags(log.Lshortfile | log.LstdFlags)
+
+	resetCache()
 
 	queue = Queue{
 		qMap: make(map[string]*SomeStruct),
-		q:    make([]string, 1),
+		q:    []string{},
 	}
 
 	go QueueLifecycle()
