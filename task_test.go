@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 	"errors"
+	"strconv"
 )
 
 type TestCase struct {
@@ -63,12 +64,7 @@ func TestGet(t *testing.T) {
 	defer close(results)
 
 	ts := time.Now()
-	for k, v := range tc {
-
-		if k == 2 {
-			time.Sleep(1100 * time.Millisecond)
-		}
-
+	for _, v := range tc {
 		go func(tc TestCase) {
 			t2 := time.Now().Sub(ts).String()
 			i, err := Get(tc.key, tc.getter)
@@ -170,6 +166,7 @@ func TestGet3(t *testing.T) {
 }
 
 
+// 10k уникальных геттеров, асинхронно
 func TestGet4(t *testing.T) {
 	fmt.Println("\n\n\nTEST 4")
 	resetCache()
@@ -178,8 +175,6 @@ func TestGet4(t *testing.T) {
 
 	results := make(chan Result, n)
 	defer close(results)
-
-	//ts := time.Now()
 
 	for i := 0; i < n; i++ {
 		var v TestCase
@@ -194,10 +189,8 @@ func TestGet4(t *testing.T) {
 
 
 		go func(tc TestCase) {
-			i, err := Get(tc.key, tc.getter)
-			//t2 := time.Now().Sub(ts).String()
-			//fmt.Printf("i: %-15v err: %-30v key: \"%s\". Time: %s\n",
-			//	i, err, tc.key, t2)
+			thisIsTotallyUniqueKey := tc.key + strconv.Itoa(n)
+			i, err := Get(thisIsTotallyUniqueKey, tc.getter)
 			results <- Result{i, err}
 		}(v)
 	}

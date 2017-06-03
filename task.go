@@ -2,23 +2,22 @@ package testTask
 
 import (
 	"sync"
-	"fmt"
 	"errors"
 	"time"
 	"log"
+	"fmt"
 )
 
 var (
 	cacheMap map[string]*Cache
 	mtxCache sync.Mutex
 
-	queue    Queue
-	mtxQueue sync.Mutex
-
 	//todo: ttl инфы в кэше
 	validTimeSeconds int64 = 3
 
 	//todo: обновление кэша нет
+	getterMap map[string]*Getter
+	mtxGMap   sync.Mutex
 )
 
 type Cache struct {
@@ -28,15 +27,55 @@ type Cache struct {
 
 // Очередь сделана в виде слайса строк-ключей для удобной итерации
 // и мапа для хранения всяких нужных вещей
-type Queue struct {
-	qMap map[string]*SomeStruct
 
-	q []string
+type Getter struct {
+	key      string
+	getter   func() (interface{}, error)
+	chResult chan Result
+
+	receiversCount int
+	*sync.Mutex
 }
 
-type SomeStruct struct {
-	getter    func() (interface{}, error)
-	Receivers []chan Result
+func (s *Getter) addReceiver() {
+	defer s.Unlock()
+	s.Lock()
+	s.receiversCount++
+}
+
+func (s *Getter) removeReceiver() {
+	defer s.Unlock()
+	s.Lock()
+	s.receiversCount--
+}
+
+func (s *Getter) haveReceivers() bool {
+	defer s.Unlock()
+	s.Lock()
+	return s.receiversCount != 0
+}
+
+func (s *Getter) get() {
+	defer close(s.chResult)
+	i, err := s.getter()
+
+	r := Result{i, err}
+	if err == nil {
+		updateCache(s.key, i)
+	}
+
+	// удаляем из мапы, чтобы во время рассылки не набрались новые получатели
+	// (рассылка может стать неактуальной)
+	func() {
+		defer mtxGMap.Unlock()
+		mtxGMap.Lock()
+		delete(getterMap, s.key)
+	}()
+
+	for s.haveReceivers() {
+		s.chResult <- r
+		s.removeReceiver()
+	}
 }
 
 type Result struct {
@@ -67,6 +106,12 @@ func eraseCache() {
 	}
 }
 
+func resetCache() {
+	defer mtxCache.Unlock()
+	mtxCache.Lock()
+	cacheMap = make(map[string]*Cache)
+}
+
 func updateCache(key string, i interface{}) {
 	defer mtxCache.Unlock()
 	mtxCache.Lock()
@@ -75,6 +120,31 @@ func updateCache(key string, i interface{}) {
 		&i,
 		time.Now().Unix(),
 	}
+}
+
+func getResult(key string, getter func() (interface{}, error)) chan Result {
+	defer mtxGMap.Unlock()
+	mtxGMap.Lock()
+
+	v, ok := getterMap[key]
+	if ok {
+		v.addReceiver()
+		return v.chResult
+	}
+
+	g := &Getter{
+		key,
+		getter,
+		make(chan Result),
+		0,
+		&sync.Mutex{},
+	}
+	getterMap[key] = g
+	g.addReceiver()
+
+	go g.get()
+
+	return g.chResult
 }
 
 func Get(key string, getter func() (interface{}, error)) (i interface{}, err error) {
@@ -92,119 +162,23 @@ func Get(key string, getter func() (interface{}, error)) (i interface{}, err err
 		return
 	}
 
-	// геттер становится в очередь к БД
-	chGetter := make(chan Result)
-	defer close(chGetter)
-
-	addToQueue(key, getter, chGetter)
-
-	result := <-chGetter
+	result := <-getResult(key, getter)
 	i = result.i
 	err = result.err
-
 	return
-}
-
-func addToQueue(key string, getter func() (interface{}, error), result chan Result) {
-	defer mtxQueue.Unlock()
-	mtxQueue.Lock()
-
-	// если геттер по такому ключу уже в очереди, то записываем наш канал в получателях
-	if v, ok := queue.qMap[key]; ok {
-		v.Receivers = append(v.Receivers, result)
-		return
-	}
-
-	// если же мы первые, то создаём такую пару k/v и добавляем наш канал в получатели
-	queue.qMap[key] = &SomeStruct{
-		getter,
-		[]chan Result{result},
-	}
-
-	queue.q = append(queue.q, key)
-}
-
-func QueueLifecycle() {
-	for {
-		if len(queue.q) != 0 {
-
-			// ключ первого в очереди геттера
-			key := func() string {
-				defer mtxQueue.Unlock()
-				mtxQueue.Lock()
-				return queue.q[0]
-			}()
-
-			task, ok := func() (i *SomeStruct, ok bool) {
-				defer mtxQueue.Unlock()
-				mtxQueue.Lock()
-
-				i, ok = queue.qMap[key]
-				return
-			}()
-
-			// такое, _вроде бы_, никогда не может случиться.
-			if ! ok {
-				log.Panicf("Несуществующий ключ в очереди. "+
-					"\"%s\". queue.qMap: %v, queue.q: %v.",
-					key, queue.qMap, queue.q)
-			}
-
-			i, err := task.getter()
-			r := Result{i, err}
-
-			for _, v := range task.Receivers {
-				v <- r
-			}
-
-			if err == nil {
-				updateCache(key, i)
-			}
-
-			func() {
-				defer mtxQueue.Unlock()
-				mtxQueue.Lock()
-
-				// удаляем наш ключ из мапы геттеров
-				delete(queue.qMap, key)
-
-				// переходим к следующему запросу
-				queue.q = queue.q[1:]
-			}()
-		}
-	}
-}
-
-
-func resetCache() {
-	defer mtxCache.Unlock()
-	mtxCache.Lock()
-	cacheMap = make(map[string]*Cache)
 }
 
 func init() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
-
 	resetCache()
+	getterMap = make(map[string]*Getter)
 
-	queue = Queue{
-		qMap: make(map[string]*SomeStruct),
-		q:    []string{},
-	}
-
-	go QueueLifecycle()
-
-	go func(timeout time.Duration) {
-		working := true
-		for working {
+	go func() {
+		for {
 			select {
-			case <-time.After(timeout):
-				working = false
-
-
 			case <-time.After(100 * time.Millisecond):
 				eraseCache()
 			}
 		}
-	}(5 * time.Minute)
+	}()
 }
