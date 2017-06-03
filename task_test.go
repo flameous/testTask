@@ -34,7 +34,7 @@ var (
 		key: "orange",
 		getter: func() (interface{}, error) {
 			// p(A) = 30 %
-			return 0, errors.New("something went wrong!")
+			return 0, errors.New("Я всегда ломаюсь, это в порядке вещей!")
 		},
 	}
 )
@@ -69,7 +69,7 @@ func TestGet(t *testing.T) {
 			t2 := time.Now().Sub(ts).String()
 			i, err := Get(tc.key, tc.getter)
 
-			fmt.Printf("i: %-15v err: %-30v key: \"%s\". Time: %s\n",
+			fmt.Printf("i: %-15v err: %-40v key: \"%s\". Time: %s\n",
 				i, err, tc.key, t2)
 			results <- Result{i, err}
 		}(v)
@@ -106,7 +106,7 @@ func TestGet2(t *testing.T) {
 		go func(tc TestCase) {
 			i, err := Get(tc.key, tc.getter)
 			t2 := time.Now().Sub(ts).String()
-			fmt.Printf("i: %-15v err: %-30v key: \"%s\". Time: %s\n",
+			fmt.Printf("i: %-15v err: %-40v key: \"%s\". Time: %s\n",
 				i, err, tc.key, t2)
 			results <- Result{i, err}
 		}(v)
@@ -153,7 +153,7 @@ func TestGet3(t *testing.T) {
 		go func(tc TestCase) {
 			i, err := Get(tc.key, tc.getter)
 			t2 := time.Now().Sub(ts).String()
-			fmt.Printf("i: %-15v err: %-30v key: \"%s\". Time: %s\n",
+			fmt.Printf("i: %-15v err: %-40v key: \"%s\". Time: %s\n",
 				i, err, tc.key, t2)
 			results <- Result{i, err}
 		}(v)

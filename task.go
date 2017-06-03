@@ -25,9 +25,6 @@ type Cache struct {
 	creationTime int64
 }
 
-// Очередь сделана в виде слайса строк-ключей для удобной итерации
-// и мапа для хранения всяких нужных вещей
-
 type Getter struct {
 	key      string
 	getter   func() (interface{}, error)
@@ -84,14 +81,12 @@ type Result struct {
 }
 
 // если есть в кэше, то сразу отдаём инфу
-func checkCache(key string) (*interface{}, bool) {
+func checkCache(key string) (*Cache, bool) {
 	defer mtxCache.Unlock()
 	mtxCache.Lock()
 
-	if d, ok := cacheMap[key]; ok {
-		return d.data, ok
-	}
-	return nil, false
+	d, ok := cacheMap[key]
+	return d, ok
 }
 
 func eraseCache() {
@@ -157,7 +152,7 @@ func Get(key string, getter func() (interface{}, error)) (i interface{}, err err
 
 	d, ok := checkCache(key)
 	if ok {
-		i = *d
+		i = d.data
 		err = errors.New("from cache!: " + key)
 		return
 	}
